@@ -256,6 +256,7 @@ redis>=4.0.0
 faiss-cpu>=1.7.0
 sentence-transformers>=2.2.0
 spacy>=3.4.0
+vllm==9.1
 transformers>=4.20.0
 torch>=1.12.0
 aioredis>=2.0.0
@@ -264,36 +265,13 @@ loguru>=0.6.0
 
 ## 🚀 部署指南
 
-### Docker 部署
 
-```bash
-# 构建镜像
-docker build -t llmcache .
-
-# 运行容器
-docker run -d \
-  --name llmcache \
-  --gpus all \
-  -p 8000:8000 \
-  -v /path/to/models:/models \
-  -e VLLM_MODEL_NAME=/models/your-model \
-  llmcache
-```
 
 ### 生产环境部署
 
-1. **Redis 集群**: 配置 Redis 集群以提高缓存性能
-2. **负载均衡**: 使用 Nginx 或 HAProxy 进行负载均衡
-3. **监控**: 集成 Prometheus + Grafana 监控
-4. **日志**: 配置 ELK 或 Loki 日志收集
 
 ## 🤝 贡献指南
 
-1. Fork 项目
-2. 创建功能分支 (`git checkout -b feature/AmazingFeature`)
-3. 提交更改 (`git commit -m 'Add some AmazingFeature'`)
-4. 推送到分支 (`git push origin feature/AmazingFeature`)
-5. 创建 Pull Request
 
 ## 📄 许可证
 
@@ -308,13 +286,5 @@ docker run -d \
 
 ## 📞 支持
 
-如有问题或建议，请：
-
-1. 查看 [文档](docs/)
-2. 搜索 [Issues](../../issues)
-3. 创建新的 [Issue](../../issues/new)
-4. 联系维护者
-
----
 
 **LLMCache** - 让 LLM 推理更快、更智能！ 🚀
