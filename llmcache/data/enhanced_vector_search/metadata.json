@@ -1,0 +1,42 @@
+{
+  "ids": [
+    "1262a987c01b69b8",
+    "752cb78f7490feee",
+    "f09ebb6585e2dbd8",
+    "1dd54df1f0b1dfa7",
+    "7002084b58de2404",
+    "25d0066f3c4d78a3",
+    "ee2a04a0155e27bd",
+    "8b745cac5a9cbe7c",
+    "9837af57659852bc",
+    "79f6c89289a8ee58",
+    "9e853174a9c8ebb1",
+    "38b32d0fc05033c3",
+    "9d6252be3550bfc6",
+    "51faa1cc61b28bd6",
+    "212693356b7f04c4",
+    "289df88c0b81592b",
+    "6c6656f13e731978"
+  ],
+  "texts": [
+    "Please explain what artificial intelligence is?",
+    "What is machine learning?",
+    "What are the basic concepts of deep learning?",
+    "What is natural language processing?",
+    "Explain the basic concepts of computer vision.",
+    "Please explain in detail the differences between deep learning and machine learning, and describe their respective application scenarios and advantages/disadvantages.",
+    "Analyze the current application status of artificial intelligence in healthcare, finance, and education, as well as future development trends.",
+    "Compare different neural network architectures (CNN, RNN, Transformer) and explain their working principles.",
+    "What is reinforcement learning?",
+    "Explain the backpropagation algorithm in neural networks.",
+    "What is the attention mechanism?",
+    "Explain how Generative Adversarial Networks (GANs) work.",
+    "What is transfer learning?",
+    "Explain the basic structure of convolutional neural networks.",
+    "What are recurrent neural networks?",
+    "Explain the innovations of the Transformer architecture.",
+    "Explain how Generative Adversarial Networks (GANs)."
+  ],
+  "total_count": 17,
+  "updated_at": "2025-07-21T18:45:48.812636"
+}

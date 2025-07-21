@@ -1,0 +1,63 @@
+{
+  "shared_memory": {
+    "enabled": true,
+    "memory_size": 67108864,
+    "max_entries": 10000,
+    "cleanup_interval": 300,
+    "enable_compression": true,
+    "shared_name": "vllm_cache_memory",
+    "description": "通用共享内存配置"
+  },
+  "similar_request_memory": {
+    "enabled": true,
+    "request_mapping_memory_size": 8388608,
+    "token_mapping_memory_size": 8388608,
+    "max_entries": 5000,
+    "request_mapping_shared_name": "vllm_request_mappings",
+    "token_mapping_shared_name": "vllm_token_mappings",
+    "cleanup_threshold": 0.9,
+    "cleanup_ratio": 0.3,
+    "linux_optimizations": {
+      "use_hugepages": true,
+      "use_posix_shm": true,
+      "lock_memory": true,
+      "mmap_populate": true
+    },
+    "description": "分离式共享内存配置：请求映射和token映射使用独立的共享内存区域"
+  },
+  "linux_performance": {
+    "enable_numa_awareness": true,
+    "cpu_affinity": "auto",
+    "memory_policy": "interleave",
+    "transparent_hugepages": "madvise"
+  },
+  "cache_strategy": {
+    "similar_texts": {
+      "use_local_cache": false,
+      "reason": "直接从POSIX共享内存获取，性能最优"
+    },
+    "request_context": {
+      "use_local_cache": true,
+      "ttl_seconds": 1800
+    },
+    "speculative_data": {
+      "use_local_cache": false,
+      "auto_cleanup": true,
+      "cleanup_threshold": 1000
+    }
+  },
+  "performance": {
+    "memory_compaction_threshold": 0.8,
+    "lru_eviction_enabled": true,
+    "statistics_enabled": true,
+    "debug_logging": false,
+    "atomic_operations": true
+  },
+  "speculative_decoding": {
+    "enabled": true,
+    "max_proposal_tokens": 5,
+    "similarity_threshold": 0.7,
+    "context_window_size": 512,
+    "adaptive_proposals": true
+  }
+}
