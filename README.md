@@ -63,15 +63,8 @@ llmcache/
 ├── examples/                     # 使用示例
 │   ├── enhanced_llm_usage.py     # 基本使用示例
 │   └── complete_speculative_example.py # 完整示例
-├── scripts/                      # 脚本工具
-│   ├── benchmark.py              # 性能测试
-│   ├── health_check.py           # 健康检查
-│   └── monitor.py                # 监控工具
 ├── config/                       # 配置文件
-│   └── shared_memory_config.json # 共享内存配置
-└── docs/                         # 文档
-    ├── migration_guide.md        # 迁移指南
-    └── true_inheritance_implementation.md # 实现文档
+    └── shared_memory_config.json # 共享内存配置
 ```
 
 ## 🛠️ 快速开始
