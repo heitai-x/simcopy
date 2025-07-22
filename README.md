@@ -38,13 +38,13 @@
 ```
 llmcache/
 ├── src/
-│   ├── cache/                     # 缓存系统
+│   ├── cache/                     # 缓存系统（可以直接替换，注意接口就好）
 │   │   ├── multi_level_cache.py   # 多级缓存管理
 │   │   ├── redis_manager.py       # Redis 缓存管理
 │   │   └── enhanced_vector_search.py # 向量搜索
 │   ├── handler/                   # 处理器模块
 │   │   ├── enhanced_async_llm.py  # 增强 AsyncLLM
-│   │   └── similar_request_memory.py # 相似请求内存管理
+│   │   └── similar_request_memory.py # 相似请求内存管理（共享内存）
 │   ├── nlp/                      # NLP 处理
 │   │   └── async_conjunction_extractor.py # 连接词提取
 │   ├── config/                   # 配置管理
@@ -52,13 +52,13 @@ llmcache/
 │   │   ├── handler_config.py     # 处理器配置
 │   │   └── nlp_config.py         # NLP 配置
 │   ├── models/                   # 数据模型
-│   │   ├── request.py            # 请求模型
-│   │   ├── cache.py              # 缓存模型
+│   │   ├── request.py            # 请求格式(无用)
+│   │   ├── cache.py              # 缓存格式
 │   │   └── enums.py              # 枚举定义
 │   └── utils/                    # 工具模块
 │       ├── hasher.py             # 哈希工具
 │       ├── logger.py             # 日志工具
-│       └── similarity_search_helper.py # 相似度搜索助手
+│       └── similarity_search_helper.py # 相似度搜索助手（包装向量数据库）
 ├── examples/                     # 使用示例
 │   ├── enhanced_llm_usage.py     # 基本使用示例
 │   └── complete_speculative_example.py # 完整示例
