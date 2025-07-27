@@ -135,18 +135,15 @@ class MYNgramProposer:
         
 
         similar_texts = self._get_similar_texts_direct(request_id)
-        similar_texts.append(context_token_ids)
+        # similar_texts.append(context_token_ids)
         
         result = self._sequential_match_similar_texts(context_token_ids, similar_texts, k)
         if result is not None:
+            print("length:",result)
             return result
         return None
         
-    def _get_similar_texts_direct(
-        self,
-        request_id: str,
-        tokenizer=None
-    ) -> List[np.ndarray]:
+    def _get_similar_texts_direct(self, request_id: str, tokenizer=None) -> List[np.ndarray]:
         """直接从SimilarRequestMemoryManager获取相似文本，去除RequestManager中间层
         
         优化点：
@@ -164,22 +161,55 @@ class MYNgramProposer:
             return []
         
         try:
+            # 添加调试信息
+            print(f"[共享内存读取] 正在查找请求ID: '{request_id}'")
+            print(f"[共享内存读取] 请求ID长度: {len(request_id)}")
+            print(f"[共享内存读取] 请求ID类型: {type(request_id)}")
+            
+            # 检查共享内存管理器状态
+            if hasattr(self.memory_manager, '_request_to_similar'):
+                all_keys = list(self.memory_manager._request_to_similar.keys())
+                print(f"[共享内存读取] 当前共享内存中的所有请求ID: {all_keys}")
+                print(f"[共享内存读取] 共享内存中请求映射总数: {len(all_keys)}")
+                
+                # 检查是否有相似的key
+                for key in all_keys:
+                    if request_id in key or key in request_id:
+                        print(f"[共享内存读取] 发现相似key: '{key}'")
+            
             # 直接从SimilarRequestMemoryManager获取相似请求映射
             similar_hashes = self.memory_manager.get_similar_request_mapping(request_id)
             if not similar_hashes:
+                print(f"[共享内存读取] 请求 {request_id} 未找到相似请求映射")
+                
+                # 尝试重新加载数据
+                if hasattr(self.memory_manager, '_load_data'):
+                    print(f"[共享内存读取] 尝试重新加载共享内存数据")
+                    self.memory_manager._load_data()
+                    similar_hashes = self.memory_manager.get_similar_request_mapping(request_id)
+                    if similar_hashes:
+                        print(f"[共享内存读取] 重新加载后找到映射: {similar_hashes}")
+                
                 return []
+            print(f"[共享内存] 请求 {request_id} 找到 {len(similar_hashes)} 个相似请求: {similar_hashes}")
             
             similar_token_sequences = []
             for similar_hash in similar_hashes:
                 tokens = self.memory_manager.get_answer_tokens(similar_hash)
                 if tokens:
+                    print(f"[共享内存] 相似请求 {similar_hash} 获取到 {len(tokens)} 个tokens: {tokens[:20]}{'...' if len(tokens) > 20 else ''}")
                     # 将token列表转换为numpy数组
                     token_array = np.array(tokens, dtype=np.int32)
                     similar_token_sequences.append(token_array)
+                else:
+                    print(f"[共享内存] 相似请求 {similar_hash} 未获取到tokens")
             
             # 将结果存储到本地缓存
             if similar_token_sequences:
+                print(f"[共享内存] 成功获取 {len(similar_token_sequences)} 个相似文本序列，已存储到本地缓存")
                 self.local_cache.put(request_id, similar_token_sequences)
+            else:
+                print(f"[共享内存] 请求 {request_id} 未获取到有效的token序列")
             return similar_token_sequences
             
         except Exception as e:
@@ -385,10 +415,42 @@ class MYNgramProposer:
         """初始化共享内存管理器"""
         if SimilarRequestMemoryManager and self.enable_direct_memory_access:
             try:
-                self.memory_manager = SimilarRequestMemoryManager()
-                print("✓ 直接内存访问已启用，去除RequestManager中间层")
+                # 导入配置类
+                spec = importlib.util.spec_from_file_location(
+                    "similar_request_memory", 
+                    os.path.join(vllm_root, 'llmcache', 'src', 'handler', 'similar_request_memory.py')
+                )
+                similar_request_memory_module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(similar_request_memory_module)
+                SimilarRequestMemoryConfig = similar_request_memory_module.SimilarRequestMemoryConfig
+                
+                # 使用与enhanced_async_llm.py完全相同的配置
+                config = SimilarRequestMemoryConfig(
+                    request_mapping_memory_size=8 * 1024 * 1024,  # 8MB
+                    token_mapping_memory_size=8 * 1024 * 1024,    # 8MB
+                    max_entries=5000,
+                    request_mapping_shared_name="vllm_request_mappings",
+                    token_mapping_shared_name="vllm_token_mappings"
+                )
+                
+                self.memory_manager = SimilarRequestMemoryManager(config)
+                print("✓ 直接内存访问已启用，使用统一配置")
+                
+                # 验证共享内存是否可访问
+                if hasattr(self.memory_manager, '_request_shm') and self.memory_manager._request_shm:
+                    print(f"✓ 请求共享内存连接成功: {self.memory_manager._request_shm.name}")
+                else:
+                    print("✗ 请求共享内存连接失败")
+                    
+                if hasattr(self.memory_manager, '_token_shm') and self.memory_manager._token_shm:
+                    print(f"✓ Token共享内存连接成功: {self.memory_manager._token_shm.name}")
+                else:
+                    print("✗ Token共享内存连接失败")
+                    
             except Exception as e:
                 print(f"✗ 初始化SimilarRequestMemoryManager失败: {e}")
+                import traceback
+                print(f"详细错误: {traceback.format_exc()}")
                 self.enable_direct_memory_access = False
         elif not SimilarRequestMemoryManager:
             print("✗ SimilarRequestMemoryManager导入失败，共享内存功能不可用")
