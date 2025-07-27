@@ -9,7 +9,7 @@
 4. 流式输出：支持实时流式生成
 5. 性能优化：减少重复计算和等待时间
 """
-
+import os
 import asyncio
 import uuid
 import time
@@ -93,7 +93,6 @@ class EnhancedAsyncLLM(AsyncLLM):
         """
         from vllm import envs
         from vllm.v1.executor.abstract import Executor
-        
         # 检查VLLM_USE_V1环境变量
         if not envs.VLLM_USE_V1:
             raise ValueError(
@@ -143,6 +142,14 @@ class EnhancedAsyncLLM(AsyncLLM):
         self.handler_config = handler_config or HandlerConfig()
         self._nlp_max_concurrent = nlp_max_concurrent
         self._active_tasks: Dict[str, asyncio.Task] = {}
+        
+        # 初始化推理中断统计
+        self._interrupt_stats = {
+            'successful_interrupts': 0,
+            'failed_interrupts': 0,
+            'total_interrupt_time': 0.0,
+            'total_attempts': 0
+        }
         if self.handler_config.features.enable_nlp_enhancement:
             self.conjunction_extractor = AsyncConjunctionExtractor()
             self.conjunction_extractor.set_max_concurrent_tasks(self._nlp_max_concurrent)
@@ -185,22 +192,19 @@ class EnhancedAsyncLLM(AsyncLLM):
         if hasattr(self, 'output_handler') and self.output_handler and self.output_handler.done():
             logger.warning(f"输出处理器已停止，跳过任务创建: {task_name}")
             raise RuntimeError("Output handler is not running")
-        logger.info("输出处理器未停止")
+        
         # 检查是否已有同名任务
         if task_name in self._active_tasks:
             existing_task = self._active_tasks[task_name]
-            logger.info("任务存在")
             if not existing_task.done():
                 logger.debug(f"任务 {task_name} 已存在，取消旧任务")
                 existing_task.cancel()
-        logger.info(f"任务{task_name}创建")
+        
         task = asyncio.create_task(coro)
         self._active_tasks[task_name] = task
         
         def cleanup_task(task_name):
             self._active_tasks.pop(task_name, None)
-            # 如果是关键任务失败，可能需要通知输出处理器
-            # 先检查任务是否被取消，避免在取消的任务上调用 exception() 导致 CancelledError
             if not task.cancelled():
                 try:
                     exception = task.exception()
@@ -414,7 +418,6 @@ class EnhancedAsyncLLM(AsyncLLM):
             
         except Exception as e:
             logger.error(f"存储相似度上下文失败 [{request_id}]: {e}")
-    
 
     
     async def _do_cache_update(self, prompt: str, sampling_params: SamplingParams, 
@@ -501,20 +504,17 @@ class EnhancedAsyncLLM(AsyncLLM):
     
     async def _start_async_tasks(self, prompt: str, request_id: str):
         """启动异步任务"""
-        logger.info("并行分解和查找")
         task_prefix = f"req_{request_id}"
         nlp_task = None
         initial_similarity_task = None
 
         if self.handler_config.features.enable_nlp_enhancement:
-            logger.info(f"nlp分解:{task_prefix}_nlp")
             nlp_task = self._create_task(
                 self._process_nlp_async(str(prompt), request_id),
                 f"{task_prefix}_nlp"
             )
 
         if self.handler_config.features.enable_similarity_search and self.vector_search_manager:
-            logger.info(f"原始查找:{task_prefix}_nlp")
             initial_similarity_task = self._create_task(
                 self.similarity_search_helper.try_layered_similarity_search(
                     prompt, self.cache_manager
@@ -528,7 +528,6 @@ class EnhancedAsyncLLM(AsyncLLM):
         """处理NLP任务和子句搜索"""
         nlp_result = await self._process_nlp_task(nlp_task, request_id)
         all_similar_answers = list(initial_similar_answers)
-        logger.info(nlp_result)
         # 子句级相似度搜索
         # 修复：添加更严格的 None 检查
         if nlp_result is not None and nlp_result.get('has_conjunctions', False) and self.vector_search_manager:
@@ -587,80 +586,49 @@ class EnhancedAsyncLLM(AsyncLLM):
         prompt_adapter_request: Optional[Any] = None,
         priority: int = 0,
     ) -> 'EnhancedRequestOutputCollector':
-        """Enhanced add_request with caching, NLP preprocessing and similarity search."""
+        """Enhanced add_request with parallel processing - 保持原有流程但不等待完成"""
         
         start_time = time.time()
         
         try:
-            # Generate hash_id for this request
-            
-            logger.info(f"hash_id:{hash_id}")
-            # Step 1: Check cache first
+
+            # Step 1: Check cache first (保持不变)
             cache_entry = await self.cache_manager.get(hash_id)
             
             if cache_entry:
-                cached_result = await self._check_cache(request_id, cache_entry,prompt)
-                # Return cached result through enhanced collector
+                cached_result = await self._check_cache(request_id, cache_entry, prompt)
                 collector = EnhancedRequestOutputCollector(
                     output_kind=params.output_kind,
                     hash_id=hash_id
                 )
-                # 直接放入缓存结果，跳过推理
                 collector.put_cached_result(cached_result)
                 return collector
-        
 
-            
-            # Step 4: Start NLP preprocessing and initial similarity search asynchronously
-            
-            nlp_task, initial_similarity_task = await self._start_async_tasks(prompt, request_id)
-        
-            # Step 5: Process initial similarity search results
-            direct_reuse, initial_similar_answers = await self._process_initial_similarity_search(
-                initial_similarity_task, request_id, f"req_{request_id}"
-            )
-        
-            if direct_reuse:
-                # 如果可以直接重用，立即返回缓存结果
-                if initial_similar_answers:
-                    # 获取最佳匹配结果
-                    best_match = initial_similar_answers[0]["cache_entry"]
-                    if best_match and best_match.status == CacheStatus.COMPLETED:
-                        cached_result = await self._check_cache(request_id, best_match,prompt)
-                        collector = EnhancedRequestOutputCollector(
-                            output_kind=params.output_kind,
-                            hash_id=hash_id
-                        )
-                        collector.put_cached_result(cached_result)
-                        return collector
-                
-                # 如果没有找到有效的相似结果，继续正常处理
-                logger.warning(f"相似度重用失败，继续正常处理 [{request_id}]")
-            # Step 6: Wait for NLP processing and perform subsentence search
+            # 立即创建收集器
             collector = EnhancedRequestOutputCollector(
                 output_kind=params.output_kind,
                 hash_id=hash_id
             )
-            all_similar_answers = await self._process_nlp_and_subsearch(nlp_task, request_id, initial_similar_answers)
-            logger.info(f"initial_similar_answers:{initial_similar_answers}")
-            # Step 7: Process and store similarity context
-            if all_similar_answers:
-                logger.info("store_context")
-                await self._store_similarity_context(request_id, all_similar_answers)
-
-            cache_entry = CacheEntry(
-                original_request_id=request_id,
-                hash_id=hash_id,
-                result=None,
-                result_tokens=None,
-                status=CacheStatus.PROCESSING
+            
+            # 立即启动推理
+            inference_task = self._create_task(
+                self._add_to_engine(
+                    prompt, params, request_id, arrival_time, lora_request,
+                    tokenization_kwargs, trace_headers, prompt_adapter_request,
+                    priority, collector
+                ),
+                f"inference_{request_id}"
             )
-            await self.cache_manager.put(hash_id, cache_entry)
-            logger.info(f"已创建缓存条目: {hash_id}")
-            # Step 8-10: Add to engine
-            await self._add_to_engine(prompt, params, request_id, arrival_time, lora_request,
-                                    tokenization_kwargs, trace_headers, prompt_adapter_request,
-                                    priority, collector)
+            
+            # 并行启动NLP和相似度搜索
+            background_task = self._create_task(
+                self._process_background_nlp_and_similarity_with_interrupt(
+                    prompt, request_id, hash_id, params, collector, inference_task
+                ),
+                f"background_processing_{request_id}"
+            )
+            
+            # 立即返回收集器
             return collector
             
         except Exception as e:
@@ -684,6 +652,225 @@ class EnhancedAsyncLLM(AsyncLLM):
             )
             fallback_collector.set_parent_collector(parent_collector)
             return fallback_collector
+    
+    async def _process_background_nlp_and_similarity(
+        self,
+        prompt: str,
+        request_id: str,
+        hash_id: str,
+        params: SamplingParams
+    ) -> None:
+        """后台处理NLP和相似度搜索"""
+        try:
+            nlp_task, initial_similarity_task = await self._start_async_tasks(prompt, request_id)
+        
+            direct_reuse, initial_similar_answers = await self._process_initial_similarity_search(
+                initial_similarity_task, request_id, f"req_{request_id}"
+            )
+        
+            # 如果发现高相似度结果，记录但不中断推理
+            if direct_reuse:
+                if initial_similar_answers:
+                    best_match = initial_similar_answers[0]["cache_entry"]
+                    if best_match and best_match.status == CacheStatus.COMPLETED:
+                        logger.info(f"发现高相似度缓存，但推理已启动 [{request_id}]")
+                else:
+                    logger.warning(f"相似度重用失败，继续正常处理 [{request_id}]")
+            
+            all_similar_answers = await self._process_nlp_and_subsearch(
+                nlp_task, request_id, initial_similar_answers
+            )
+            
+            # Step 7: Process and store similarity context
+            if all_similar_answers:
+                await self._store_similarity_context(request_id, all_similar_answers)
+
+            # 创建缓存条目
+            cache_entry = CacheEntry(
+                original_request_id=request_id,
+                hash_id=hash_id,
+                result=None,
+                result_tokens=None,
+                status=CacheStatus.PROCESSING
+            )
+            await self.cache_manager.put(hash_id, cache_entry)
+            
+        except Exception as e:
+            logger.error(f"后台NLP和相似度处理失败 [{request_id}]: {e}")
+    
+    async def _process_background_nlp_and_similarity_with_interrupt(
+        self,
+        prompt: str,
+        request_id: str,
+        hash_id: str,
+        params: SamplingParams,
+        collector: 'EnhancedRequestOutputCollector',
+        inference_task: asyncio.Task
+    ) -> None:
+        """后台处理NLP和相似度搜索 - 支持推理中断优化"""
+        try:
+            nlp_task, initial_similarity_task = await self._start_async_tasks(prompt, request_id)
+        
+            direct_reuse, initial_similar_answers = await self._process_initial_similarity_search(
+                initial_similarity_task, request_id, f"req_{request_id}"
+            )
+        
+            # 推理中断优化：如果发现高相似度结果，尝试中断推理
+            if direct_reuse and initial_similar_answers:
+                best_match = initial_similar_answers[0]["cache_entry"]
+                if best_match and best_match.status == CacheStatus.COMPLETED:
+                    similarity_score = initial_similar_answers[0].get("similarity", 0.0)
+                    logger.info(f"发现高相似度缓存 (相似度: {similarity_score:.3f})，尝试中断推理 [{request_id}]")
+                    
+                    if not inference_task.done() or (await self._should_interrupt_inference(request_id, similarity_score) and self.output_processor.request_states.get(request_id)):
+                        interrupt_success = await self._attempt_inference_interrupt(
+                            request_id, inference_task, collector, best_match, prompt
+                        )
+                        if interrupt_success:
+                            return
+
+                    else:
+                        if inference_task.done():
+                            logger.info(f"推理已完成，无法中断 [{request_id}]")
+                        else:
+                            logger.info(f"相似度不足以中断推理 [{request_id}]")
+            
+            all_similar_answers = await self._process_nlp_and_subsearch(
+                nlp_task, request_id, initial_similar_answers
+            )
+            
+            # Step 7: Process and store similarity context
+            if all_similar_answers:
+                await self._store_similarity_context(request_id, all_similar_answers)
+
+            # 创建缓存条目
+            cache_entry = CacheEntry(
+                original_request_id=request_id,
+                hash_id=hash_id,
+                result=None,
+                result_tokens=None,
+                status=CacheStatus.PROCESSING
+            )
+            await self.cache_manager.put(hash_id, cache_entry)
+            
+        except Exception as e:
+            logger.error(f"后台NLP和相似度处理失败 [{request_id}]: {e}")
+    
+    async def _should_interrupt_inference(self, request_id: str, similarity_score: float) -> bool:
+        """判断是否应该中断推理
+        
+        Args:
+            request_id: 请求ID
+            similarity_score: 相似度分数
+            
+        Returns:
+            是否应该中断推理
+        """
+        # 更新中断尝试统计
+        self._interrupt_stats['total_attempts'] += 1
+        
+        # 中断阈值：只有极高相似度才中断（避免频繁中断）
+        INTERRUPT_THRESHOLD = 0.95
+        
+        if similarity_score < INTERRUPT_THRESHOLD:
+            logger.debug(f"相似度 {similarity_score:.3f} 低于中断阈值 {INTERRUPT_THRESHOLD} [{request_id}]")
+            return False
+
+        return True
+    
+    async def _attempt_inference_interrupt(
+        self,
+        request_id: str,
+        inference_task: asyncio.Task,
+        collector: 'EnhancedRequestOutputCollector',
+        best_match: 'CacheEntry',
+        prompt: str
+    ) -> bool:
+        """尝试中断推理并返回缓存结果
+        
+        Args:
+            request_id: 请求ID
+            inference_task: 推理任务
+            collector: 输出收集器
+            best_match: 最佳匹配的缓存条目
+            prompt: 原始提示
+            
+        Returns:
+            是否成功中断
+        """
+        try:
+            # 记录中断开始时间
+            interrupt_start = time.time()
+            
+            # 1. 中断推理任务
+            inference_task.cancel()
+            logger.info(f"推理任务已取消 [{request_id}]")
+            
+            # 2. 中断底层VLLM请求
+            await self._abort_vllm_request(request_id)
+            
+            # 3. 将缓存结果放入收集器
+            cached_result = await self._check_cache(request_id, best_match, prompt)
+            collector.put_cached_result(cached_result)
+            
+            # 4. 记录中断性能
+            interrupt_time = time.time() - interrupt_start
+            logger.info(f"推理中断成功，耗时 {interrupt_time:.3f}s，使用缓存结果 [{request_id}]")
+            
+            # 5. 更新统计信息
+            self._interrupt_stats['successful_interrupts'] += 1
+            self._interrupt_stats['total_interrupt_time'] += interrupt_time
+            
+            return True
+            
+        except Exception as interrupt_error:
+            logger.warning(f"推理中断失败，继续正常处理 [{request_id}]: {interrupt_error}")
+            
+            # 更新失败统计
+            self._interrupt_stats['failed_interrupts'] += 1
+            
+            return False
+    
+    async def _abort_vllm_request(self, request_id: str) -> None:
+        """中断VLLM底层请求"""
+        try:
+            # 调用父类的abort方法中断VLLM请求
+            await super().abort(request_id)
+            logger.info(f"VLLM请求中断成功 [{request_id}]")
+        except Exception as e:
+            logger.error(f"VLLM请求中断失败 [{request_id}]: {e}")
+            raise
+    
+    def get_interrupt_stats(self) -> Dict[str, Any]:
+        """获取推理中断统计信息
+        
+        Returns:
+            包含中断统计信息的字典
+        """
+        stats = self._interrupt_stats.copy()
+        
+        # 计算成功率
+        if stats['total_attempts'] > 0:
+            stats['success_rate'] = stats['successful_interrupts'] / stats['total_attempts']
+        else:
+            stats['success_rate'] = 0.0
+        
+        # 计算平均中断时间
+        if stats['successful_interrupts'] > 0:
+            stats['avg_interrupt_time'] = stats['total_interrupt_time'] / stats['successful_interrupts']
+        else:
+            stats['avg_interrupt_time'] = 0.0
+        
+        return stats
+    
+    def reset_interrupt_stats(self) -> None:
+        """重置推理中断统计信息"""
+        self._interrupt_stats = {
+            'successful_interrupts': 0,
+            'failed_interrupts': 0,
+            'total_interrupt_time': 0.0,
+            'total_attempts': 0
+        }
     
     async def _add_enhanced_request(
         self, 
@@ -780,15 +967,12 @@ class EnhancedAsyncLLM(AsyncLLM):
     
     async def cleanup(self) -> None:
         """清理资源"""
-        logger.info("开始清理增强 AsyncLLM 资源...")
-        
         # 取消所有活跃任务
         cancelled_tasks = []
         for task_name, task in list(self._active_tasks.items()):
             if not task.done():
                 task.cancel()
                 cancelled_tasks.append(task)
-                logger.debug(f"已取消任务: {task_name}")
         
         # 等待任务完成（带超时）
         if cancelled_tasks:
@@ -828,8 +1012,6 @@ class EnhancedAsyncLLM(AsyncLLM):
                 self._shared_memory_manager.cleanup()
             except Exception as e:
                 logger.error(f"清理共享内存管理器失败: {e}")
-        
-        logger.info("增强 AsyncLLM 资源清理完成")
 
     @classmethod
     def from_custom_config(
@@ -919,12 +1101,9 @@ class EnhancedAsyncLLM(AsyncLLM):
             import torch.distributed as dist
             if dist.is_available() and dist.is_initialized():
                 dist.destroy_process_group()
-                logger.info("PyTorch 分布式进程组已清理")
         except Exception as e:
             logger.error(f"清理 PyTorch 分布式进程组失败: {e}")
         
         # 最后调用父类清理
         super().shutdown()
-        
-        logger.info("增强 AsyncLLM 关闭完成")
 
